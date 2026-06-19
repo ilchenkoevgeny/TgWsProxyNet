@@ -11,10 +11,15 @@ namespace TgWsProxy.Telegram;
 public static class RelayInitGenerator
 {
     /// <summary>
-    /// Creates a 64-byte encrypted initialization packet for the selected DC and MTProto transport protocol.
+    /// Creates a 64-byte obfuscated initialization packet for the selected DC and MTProto transport protocol.
     /// </summary>
     public static byte[] Generate(ReadOnlySpan<byte> protoTag, short dcIndex)
     {
+        if (protoTag.Length != 4)
+        {
+            throw new ArgumentException("Protocol tag must contain exactly 4 bytes.", nameof(protoTag));
+        }
+
         while (true)
         {
             var random = RandomNumberGenerator.GetBytes(MtProtoConstants.HandshakeLength);
@@ -24,18 +29,39 @@ public static class RelayInitGenerator
                 continue;
             }
 
-            protoTag.CopyTo(random.AsSpan(MtProtoConstants.ProtoTagPosition, 4));
-            BinaryPrimitives.WriteInt16LittleEndian(
-                random.AsSpan(MtProtoConstants.DcIndexPosition, 2),
-                dcIndex);
-
             var key = random.AsSpan(MtProtoConstants.SkipLength, MtProtoConstants.PreKeyLength);
             var iv = random.AsSpan(
                 MtProtoConstants.SkipLength + MtProtoConstants.PreKeyLength,
                 MtProtoConstants.IvLength);
 
-            using var transform = new AesCtrTransform(key, iv);
-            return transform.Update(random);
+            byte[] encryptedFull;
+
+            using (var transform = new AesCtrTransform(key, iv))
+            {
+                encryptedFull = transform.Update(random);
+            }
+
+            Span<byte> tailPlain = stackalloc byte[8];
+
+            protoTag.CopyTo(tailPlain[..4]);
+
+            BinaryPrimitives.WriteInt16LittleEndian(
+                tailPlain.Slice(4, 2),
+                dcIndex);
+
+            RandomNumberGenerator.Fill(tailPlain.Slice(6, 2));
+
+            var result = random.ToArray();
+
+            for (var i = 0; i < 8; i++)
+            {
+                var position = MtProtoConstants.ProtoTagPosition + i;
+                var keyStreamByte = (byte)(encryptedFull[position] ^ random[position]);
+
+                result[position] = (byte)(tailPlain[i] ^ keyStreamByte);
+            }
+
+            return result;
         }
     }
 

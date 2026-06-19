@@ -7,3 +7,4 @@ logs/
 *.suo
 *.log
 appsettings.Local.json
+artifacts/publish
