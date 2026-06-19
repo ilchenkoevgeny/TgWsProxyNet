@@ -8,3 +8,4 @@ logs/
 *.log
 appsettings.Local.json
 artifacts/publish
+*.exe
