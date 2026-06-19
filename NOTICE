@@ -1,0 +1,9 @@
+TgWsProxyNet10 is a C#/.NET 10 port inspired by Flowseal/tg-ws-proxy:
+https://github.com/Flowseal/tg-ws-proxy
+
+The original project is licensed under the MIT License:
+Copyright (c) 2026 Flowseal
+
+This repository contains a new C# implementation and does not bundle the
+original Python sources, but it follows the same protocol-level idea:
+local MTProto proxy -> WebSocket bridge -> Telegram DC.
