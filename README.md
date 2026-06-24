@@ -1,4 +1,4 @@
-# TgWsProxyNet10
+# TgWsProxyNet
 
 Порт идеи [`Flowseal/tg-ws-proxy`](https://github.com/Flowseal/tg-ws-proxy) на C# / .NET 10 LTS.
 
