@@ -20,6 +20,8 @@ public sealed class RawWebSocketClient : IAsyncDisposable
 
     private readonly TcpClient tcpClient;
     private readonly SslStream sslStream;
+    private readonly SemaphoreSlim sendLock = new(1, 1);
+
     private bool closed;
 
     private RawWebSocketClient(TcpClient tcpClient, SslStream sslStream)
@@ -44,7 +46,9 @@ public sealed class RawWebSocketClient : IAsyncDisposable
 
         var tcpClient = new TcpClient
         {
-            NoDelay = true
+            NoDelay = true,
+            ReceiveBufferSize = 1024 * 1024,
+            SendBufferSize = 1024 * 1024
         };
 
         await tcpClient.ConnectAsync(host, 443, linkedCts.Token);
@@ -83,14 +87,19 @@ public sealed class RawWebSocketClient : IAsyncDisposable
 
         var statusCode = 0;
 
-        if (parts.Length < 2 || !int.TryParse(parts[1], out statusCode) || statusCode != 101)
+        if (parts.Length >= 2)
         {
-            await sslStream.DisposeAsync();
-            tcpClient.Dispose();
-            throw new WebSocketHandshakeException(statusCode, firstLine);
+            _ = int.TryParse(parts[1], out statusCode);
         }
 
-        return new RawWebSocketClient(tcpClient, sslStream);
+        if (statusCode == 101)
+        {
+            return new RawWebSocketClient(tcpClient, sslStream);
+        }
+
+        await sslStream.DisposeAsync();
+        tcpClient.Dispose();
+        throw new WebSocketHandshakeException(statusCode, firstLine);
     }
 
     /// <summary>
@@ -122,7 +131,16 @@ public sealed class RawWebSocketClient : IAsyncDisposable
             {
                 case OpClose:
                     closed = true;
-                    await SendFrameAsync(OpClose, frame.Payload, mask: true, cancellationToken);
+
+                    try
+                    {
+                        await SendFrameAsync(OpClose, frame.Payload, mask: true, cancellationToken);
+                    }
+                    catch
+                    {
+                        // Ignore close response errors.
+                    }
+
                     return null;
 
                 case OpPing:
@@ -161,6 +179,7 @@ public sealed class RawWebSocketClient : IAsyncDisposable
             }
         }
 
+        sendLock.Dispose();
         await sslStream.DisposeAsync();
         tcpClient.Dispose();
     }
@@ -171,14 +190,24 @@ public sealed class RawWebSocketClient : IAsyncDisposable
         bool mask,
         CancellationToken cancellationToken)
     {
-        if (closed)
-        {
-            throw new IOException("WebSocket is closed.");
-        }
+        await sendLock.WaitAsync(cancellationToken);
 
-        var frame = BuildFrame(opcode, data.Span, mask);
-        await sslStream.WriteAsync(frame, cancellationToken);
-        await sslStream.FlushAsync(cancellationToken);
+        try
+        {
+            if (closed && opcode != OpClose)
+            {
+                throw new IOException("WebSocket is closed.");
+            }
+
+            var frame = BuildFrame(opcode, data.Span, mask);
+
+            await sslStream.WriteAsync(frame, cancellationToken);
+            await sslStream.FlushAsync(cancellationToken);
+        }
+        finally
+        {
+            sendLock.Release();
+        }
     }
 
     private static byte[] BuildFrame(byte opcode, ReadOnlySpan<byte> payload, bool mask)

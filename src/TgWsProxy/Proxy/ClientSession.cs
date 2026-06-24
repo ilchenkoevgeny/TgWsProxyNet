@@ -75,6 +75,20 @@ public sealed class ClientSession : IAsyncDisposable
                 return;
             }
 
+            if (options.EnableCloudflareProxyFallback)
+            {
+                if (await TryBridgeViaCloudflareProxyAsync(
+                    clientStream,
+                    parsed,
+                    relayInit,
+                    cryptoContext,
+                    label,
+                    cancellationToken))
+                {
+                    return;
+                }
+            }
+
             if (options.EnableDirectTcpFallback)
             {
                 await BridgeViaDirectTcpAsync(
@@ -123,6 +137,16 @@ public sealed class ClientSession : IAsyncDisposable
         string label,
         CancellationToken cancellationToken)
     {
+        if (parsed.DcId >= 200)
+        {
+            logger.LogInformation(
+                "[{Label}] DC{DcId} is CDN/media DC -> Cloudflare proxy fallback",
+                label,
+                parsed.DcId);
+
+            return false;
+        }
+
         if (!options.DcEndpoints.TryGetValue(parsed.DcId, out var targetIp))
         {
             logger.LogInformation("[{Label}] DC{DcId} has no WebSocket target in config", label, parsed.DcId);
@@ -176,6 +200,95 @@ public sealed class ClientSession : IAsyncDisposable
             catch (Exception ex) when (ex is SocketException or IOException or AuthenticationException or TimeoutException)
             {
                 logger.LogWarning(ex, "[{Label}] WebSocket connect failed for {Domain}", label, domain);
+            }
+        }
+
+        return false;
+    }
+
+    private async Task<bool> TryBridgeViaCloudflareProxyAsync(
+        Stream clientStream,
+        HandshakeResult parsed,
+        byte[] relayInit,
+        CryptoContext cryptoContext,
+        string label,
+        CancellationToken cancellationToken)
+    {
+        var baseDomains = options.CloudflareProxyDomains
+            .Where(static x => !string.IsNullOrWhiteSpace(x))
+            .Select(static x => x.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(static _ => Random.Shared.Next())
+            .ToArray();
+
+        if (baseDomains.Length == 0)
+        {
+            logger.LogInformation("[{Label}] Cloudflare proxy fallback is enabled, but no domains are configured", label);
+            return false;
+        }
+
+        logger.LogInformation(
+            "[{Label}] DC{DcId}{MediaSuffix} -> trying Cloudflare proxy",
+            label,
+            parsed.DcId,
+            parsed.IsMedia ? " media" : string.Empty);
+
+        foreach (var baseDomain in baseDomains)
+        {
+            var domain = $"kws{parsed.DcId}.{baseDomain}";
+
+            try
+            {
+                logger.LogInformation(
+                    "[{Label}] DC{DcId}{MediaSuffix} -> wss://{Domain}/apiws",
+                    label,
+                    parsed.DcId,
+                    parsed.IsMedia ? " media" : string.Empty,
+                    domain);
+
+                await using var webSocket = await RawWebSocketClient.ConnectAsync(
+                    domain,
+                    domain,
+                    options.SkipTlsCertificateValidation,
+                    TimeSpan.FromSeconds(options.WebSocketConnectTimeoutSeconds),
+                    "/apiws",
+                    cancellationToken);
+
+                await webSocket.SendBinaryAsync(relayInit, cancellationToken);
+
+                using var splitter = new MessageSplitter(relayInit, parsed.ProtoInt);
+
+                await TrafficBridge.BridgeWebSocketAsync(
+                    clientStream,
+                    webSocket,
+                    cryptoContext,
+                    splitter,
+                    TimeSpan.FromSeconds(options.WebSocketKeepAliveSeconds),
+                    logger,
+                    label,
+                    cancellationToken);
+
+                return true;
+            }
+            catch (WebSocketHandshakeException ex)
+            {
+                logger.LogWarning(
+                    "[{Label}] DC{DcId}{MediaSuffix} Cloudflare proxy handshake failed for {Domain}: {StatusLine}",
+                    label,
+                    parsed.DcId,
+                    parsed.IsMedia ? " media" : string.Empty,
+                    domain,
+                    ex.StatusLine);
+            }
+            catch (Exception ex) when (ex is SocketException or IOException or AuthenticationException or TimeoutException)
+            {
+                logger.LogWarning(
+                    ex,
+                    "[{Label}] DC{DcId}{MediaSuffix} Cloudflare proxy failed for {Domain}",
+                    label,
+                    parsed.DcId,
+                    parsed.IsMedia ? " media" : string.Empty,
+                    domain);
             }
         }
 

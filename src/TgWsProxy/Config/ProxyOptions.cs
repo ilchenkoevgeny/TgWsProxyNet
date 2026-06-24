@@ -56,6 +56,35 @@ public sealed partial class ProxyOptions
     public bool SkipTlsCertificateValidation { get; set; } = true;
 
     /// <summary>
+    /// Enables Cloudflare proxy fallback for Telegram DCs that cannot be served through direct Telegram WebSocket endpoints.
+    /// This is especially important for CDN DCs such as DC203.
+    /// </summary>
+    public bool EnableCloudflareProxyFallback { get; set; } = true;
+
+    /// <summary>
+    /// Cloudflare proxy base domains used by the fallback transport.
+    /// The actual WebSocket domain is built as kws{dc}.{baseDomain}.
+    /// </summary>
+    public List<string> CloudflareProxyDomains { get; set; } =
+    [
+        "pclead.co.uk",
+        "offshor.co.uk",
+        "cakeisalie.co.uk",
+        "noskomnadzor.co.uk",
+        "lovetrue.co.uk",
+        "sorokdva.co.uk",
+        "pyatdesyatdva.co.uk",
+        "kartoshka.co.uk",
+        "sorokodin.co.uk",
+        "pyatdesyatodin.co.uk",
+        "notelega.co.uk",
+        "ebally.co.uk",
+        "nebally.co.uk",
+        "havegreatday.co.uk",
+        "pomogite.co.uk"
+    ];
+
+    /// <summary>
     /// Enables direct TCP fallback to Telegram DC if WebSocket connection cannot be established.
     /// </summary>
     public bool EnableDirectTcpFallback { get; set; } = true;
